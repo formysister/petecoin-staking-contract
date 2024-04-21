@@ -8,25 +8,33 @@ import {
     createInitializeMintInstruction,
     AccountLayout,
     createApproveInstruction,
-    getOrCreateAssociatedTokenAccount
+    getOrCreateAssociatedTokenAccount,
+    approve,
+    transfer
 } from "@solana/spl-token"
 import { assert } from "chai";
 import { PeteToken } from "../target/types/pete_token";
+import { PeteStaking } from "../target/types/pete_staking";
 
 describe("pete-token", () => {
     anchor.setProvider(anchor.AnchorProvider.env());
 
-    const program = anchor.workspace.PeteToken as Program<PeteToken>
+    const token_program = anchor.workspace.PeteToken as Program<PeteToken>
+    const staking_program = anchor.workspace.PeteStaking as Program<PeteStaking>
 
     const mintKey = anchor.web3.Keypair.generate()
     const guest = anchor.web3.Keypair.generate()
+
+    const staking_contract_address = new anchor.web3.PublicKey("CTg35G6Cin3iQZHe8i5pN9rJ5ajSyCN2sjvDmVfCyVpi")
 
     let associated_token_account = undefined
 
     it("Mint token", async () => {
         const key = anchor.AnchorProvider.env().wallet.publicKey;
+        // const key = anchor.web3.Keypair.generate()
 
-        const lamports = await program.provider.connection.getMinimumBalanceForRentExemption(
+
+        const lamports = await token_program.provider.connection.getMinimumBalanceForRentExemption(
             MINT_SIZE
         )
 
@@ -55,7 +63,7 @@ describe("pete-token", () => {
         const res = await anchor.AnchorProvider.env().sendAndConfirm(mint_tx, [mintKey]);
 
         console.log(
-            await program.provider.connection.getParsedAccountInfo(mintKey.publicKey)
+            await token_program.provider.connection.getParsedAccountInfo(mintKey.publicKey)
         );
       
         console.log("Account: ", res);
@@ -63,7 +71,7 @@ describe("pete-token", () => {
         console.log("User: ", key.toString());
 
         // Executes our code to mint our token into our specified ATA
-        await program.methods.mintToken().accounts({
+        await token_program.methods.mintToken().accounts({
             mint: mintKey.publicKey,
             tokenProgram: TOKEN_PROGRAM_ID,
             tokenAccount: associated_token_account,
@@ -71,50 +79,79 @@ describe("pete-token", () => {
         }).rpc();
 
         // Get minted token amount on the ATA for our anchor wallet
-        const minted = (await program.provider.connection.getParsedAccountInfo(associated_token_account)).value.data
+        const minted = (await token_program.provider.connection.getParsedAccountInfo(associated_token_account)).value.data
         
         console.log("Minted:", minted)
 
-        const token_account = await anchor.AnchorProvider.env().connection.getTokenAccountsByOwner(
-            key,
-            {
-                mint: mintKey.publicKey
-            }
+        const owner_balance = await getBalance(key, mintKey.publicKey)
+
+        console.log("owner balance:", owner_balance)
+
+        const fromTokenAccount = await getOrCreateAssociatedTokenAccount(
+            anchor.AnchorProvider.env().connection,
+            anchor.Wallet.local().payer,
+            mintKey.publicKey,
+            key
         )
 
-
-        const balance = token_account.value.length > 0 ? AccountLayout.decode(token_account.value[0].account.data).amount : 0
-
-        console.log("Token balance:", balance)
-
-
-        const guestATA = await getAssociatedTokenAddress(mintKey.publicKey, guest.publicKey)
-
-        const guestTx = new anchor.web3.Transaction().add(
-            createAssociatedTokenAccountInstruction(
-                key,
-                guestATA,
-                guest.publicKey,
-                mintKey.publicKey
-            )
+        const toTokenAccount = await getOrCreateAssociatedTokenAccount(
+            anchor.AnchorProvider.env().connection,
+            anchor.Wallet.local().payer,
+            mintKey.publicKey,
+            guest.publicKey
         )
-
-        await anchor.AnchorProvider.env().sendAndConfirm(guestTx, [])
+        
+        const stakingTokenAccount = await getOrCreateAssociatedTokenAccount(
+            anchor.AnchorProvider.env().connection,
+            anchor.Wallet.local().payer,
+            mintKey.publicKey,
+            staking_contract_address
+        )
 
         const approveInstruction = createApproveInstruction(
             mintKey.publicKey,
+            toTokenAccount.address,
             key,
-            guestATA,
-            100,
-            [key]
+            10
         )
 
         const approve_tx = new anchor.web3.Transaction().add(approveInstruction)
-        const approve_confirmed = await anchor.AnchorProvider.env().sendAndConfirm(approve_tx)
+        // const approve_confirmed = await anchor.AnchorProvider.env().sendAndConfirm(approve_tx, [])
 
-        console.log(approve_confirmed)
+        await token_program.methods.transfer(new anchor.BN(1000)).accounts({
+            tokenProgram: TOKEN_PROGRAM_ID,
+            from: fromTokenAccount.address,
+            signer: key,
+            to: stakingTokenAccount.address
+        }).rpc()
+
+        await staking_program.methods.deposit(new anchor.BN(1000)).accounts({
+            from: fromTokenAccount.address,
+            to: stakingTokenAccount.address,
+            autority: key,
+            tokenProgram: TOKEN_PROGRAM_ID
+        }).rpc()
+
+        const owner_balance_after_transfer = await getBalance(key, mintKey.publicKey)
+        console.log("owner balance after transfer:", owner_balance_after_transfer)
+
+        const staking_contract_balance = await getBalance(staking_contract_address, mintKey.publicKey)
+        console.log("guest balance after transfer:", staking_contract_balance)
     })
 })
+
+const getBalance = async (key: anchor.web3.PublicKey, mint: anchor.web3.PublicKey) => {
+    const token_account = await anchor.AnchorProvider.env().connection.getTokenAccountsByOwner(
+        key,
+        {
+            mint
+        }
+    )
+
+    const balance = token_account.value.length > 0 ? AccountLayout.decode(token_account.value[0].account.data).amount : 0
+
+    return balance
+}
 
 // describe("pete-staking", () => {
 //   // Configure the client to use the local cluster.

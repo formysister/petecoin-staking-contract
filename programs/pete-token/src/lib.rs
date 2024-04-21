@@ -27,7 +27,7 @@ pub mod pete_token {
         Ok(())
     }
 
-    pub fn transfer(ctx: Context<TransferToken>) -> Result<()> {
+    pub fn transfer(ctx: Context<TransferToken>, amount: u64) -> Result<()> {
         let transfer_instruction = Transfer{
             from: ctx.accounts.from.to_account_info(),
             to: ctx.accounts.to.to_account_info(),
@@ -38,7 +38,7 @@ pub mod pete_token {
 
         let cpi_ctx = CpiContext::new(cpi_program, transfer_instruction);
 
-        token::transfer(cpi_ctx, 5)?;
+        token::transfer(cpi_ctx, amount)?;
         Ok(())
     }
 }
