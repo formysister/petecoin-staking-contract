@@ -22,7 +22,7 @@ pub mod pete_token {
         
         let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
 
-        token::mint_to(cpi_context, 10000)?;
+        token::mint_to(cpi_context, 1000000)?;
 
         Ok(())
     }

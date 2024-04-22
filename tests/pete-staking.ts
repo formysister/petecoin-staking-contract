@@ -107,15 +107,16 @@ describe("pete-token", () => {
             staking_contract_address
         )
 
-        const [ myStorage, _bump ] = anchor.web3.PublicKey.findProgramAddressSync([], staking_program.programId)
+        const [ stakingStorage, _bump ] = anchor.web3.PublicKey.findProgramAddressSync([], staking_program.programId)
 
-        await staking_program.methods.initialize().accounts({ myStorage }).rpc()
+        await staking_program.methods.initialize().accounts({ stakingStorage }).rpc()
 
-        await staking_program.methods.deposit(new anchor.BN(1000)).accounts({
+        await staking_program.methods.stake(0).accounts({
             from: fromTokenAccount.address,
             to: stakingTokenAccount.address,
             autority: key,
-            tokenProgram: TOKEN_PROGRAM_ID
+            tokenProgram: TOKEN_PROGRAM_ID,
+            stakingStorage
         }).rpc()
 
         const owner_balance_after_transfer = await getBalance(key, mintKey.publicKey)
@@ -124,15 +125,11 @@ describe("pete-token", () => {
         const staking_contract_balance = await getBalance(staking_contract_address, mintKey.publicKey)
         console.log("guest balance after transfer:", staking_contract_balance)
 
-        await staking_program.methods.set(new anchor.BN(1000)).accounts({ myStorage }).rpc()
+        // await staking_program.methods.set(new anchor.BN(1000)).accounts({ myStorage }).rpc()
 
-        const stored_data = await staking_program.account.stakingStorage.fetch(myStorage)
+        const stored_data = await staking_program.account.stakingStorage.fetch(stakingStorage)
 
-        console.log("Stored data:", stored_data.x.toString())
-
-        console.log("Private key:",
-            base58.encode(anchor.Wallet.local().payer.secretKey)
-        )
+        console.log("Stored data:", stored_data.packages)
     })
 })
 
