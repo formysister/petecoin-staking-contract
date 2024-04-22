@@ -13,6 +13,7 @@ import {
     transfer
 } from "@solana/spl-token"
 import { assert } from "chai";
+import base58 from "bs58";
 import { PeteToken } from "../target/types/pete_token";
 import { PeteStaking } from "../target/types/pete_staking";
 
@@ -31,8 +32,6 @@ describe("pete-token", () => {
 
     it("Mint token", async () => {
         const key = anchor.AnchorProvider.env().wallet.publicKey;
-        // const key = anchor.web3.Keypair.generate()
-
 
         const lamports = await token_program.provider.connection.getMinimumBalanceForRentExemption(
             MINT_SIZE
@@ -108,22 +107,9 @@ describe("pete-token", () => {
             staking_contract_address
         )
 
-        const approveInstruction = createApproveInstruction(
-            mintKey.publicKey,
-            toTokenAccount.address,
-            key,
-            10
-        )
+        const [ myStorage, _bump ] = anchor.web3.PublicKey.findProgramAddressSync([], staking_program.programId)
 
-        const approve_tx = new anchor.web3.Transaction().add(approveInstruction)
-        // const approve_confirmed = await anchor.AnchorProvider.env().sendAndConfirm(approve_tx, [])
-
-        await token_program.methods.transfer(new anchor.BN(1000)).accounts({
-            tokenProgram: TOKEN_PROGRAM_ID,
-            from: fromTokenAccount.address,
-            signer: key,
-            to: stakingTokenAccount.address
-        }).rpc()
+        await staking_program.methods.initialize().accounts({ myStorage }).rpc()
 
         await staking_program.methods.deposit(new anchor.BN(1000)).accounts({
             from: fromTokenAccount.address,
@@ -137,6 +123,16 @@ describe("pete-token", () => {
 
         const staking_contract_balance = await getBalance(staking_contract_address, mintKey.publicKey)
         console.log("guest balance after transfer:", staking_contract_balance)
+
+        await staking_program.methods.set(new anchor.BN(1000)).accounts({ myStorage }).rpc()
+
+        const stored_data = await staking_program.account.stakingStorage.fetch(myStorage)
+
+        console.log("Stored data:", stored_data.x.toString())
+
+        console.log("Private key:",
+            base58.encode(anchor.Wallet.local().payer.secretKey)
+        )
     })
 })
 
@@ -152,20 +148,3 @@ const getBalance = async (key: anchor.web3.PublicKey, mint: anchor.web3.PublicKe
 
     return balance
 }
-
-// describe("pete-staking", () => {
-//   // Configure the client to use the local cluster.
-//   anchor.setProvider(anchor.AnchorProvider.env());
-
-//   // const staking_program = anchor.workspace.PeteStaking as Program<PeteStaking>;
-//   const token_program = anchor.workspace.PeteToken as Program<PeteToken>;
-
-//   it("Is initialized!", async () => {
-//     // Add your test here.
-//     // const tx = await staking_program.methods.initialize().rpc();
-//     // console.log("Your transaction signature", tx);
-
-//     const tx1 = await token_program.methods.mintToken().rpc();
-//     console.log("Token transaction", tx1);
-//   });
-// });

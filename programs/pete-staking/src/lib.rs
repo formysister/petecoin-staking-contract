@@ -2,10 +2,15 @@ use solana_program::pubkey::*;
 use solana_program::clock::{
     Clock, UnixTimestamp
 };
+use borsh:: {
+    BorshDeserialize,
+    BorshSerialize
+};
 use std::time:: {
     Duration
 };
 use anchor_lang::prelude::*;
+use std::mem::size_of;
 use anchor_spl::token;
 use anchor_spl::{
     token::{ MintTo, Token, Transfer }
@@ -16,58 +21,64 @@ declare_id!("CTg35G6Cin3iQZHe8i5pN9rJ5ajSyCN2sjvDmVfCyVpi");
 pub mod pete_staking {
     use super::*;
 
-    pub static mut packages: Vec<Package> = Vec::new();
+    // pub static mut packages: Vec<Package> = Vec::new();
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let petes_pebble_pounch = Package {
-            name: "Pete's Pebble Pounch",
+            name: String::from("Pete's Pebble Pounch"),
             deposit_amount: 500000,
             reward_amount: 539583,
-            period: Duration::from_secs(60 * 60 * 24 * 30),
+            period: 60 * 60 * 24 * 30,
             limit: 80
         };
 
         let golden_wheel_guild = Package {
-            name: "Golden Wheel Guild",
+            name: String::from("Golden Wheel Guild"),
             deposit_amount: 1000000,
             reward_amount: 1108333,
-            period: Duration::from_secs(60 * 60 * 24 * 30 * 2),
+            period: 60 * 60 * 24 * 30 * 2,
             limit: 70
         };
 
         let burrowers_bounty = Package {
-            name: "Burrower's Bounty",
+            name: String::from("Burrower's Bounty"),
             deposit_amount: 2000000,
             reward_amount: 2250000,
-            period: Duration::from_secs(60 * 60 * 24 * 30 * 3),
+            period: 60 * 60 * 24 * 30 * 3,
             limit: 60
         };
 
         let cheek_pounch_chest = Package {
-            name: "Cheek Pounch Chest",
+            name: String::from("Cheek Pounch Chest"),
             deposit_amount: 3000000,
             reward_amount: 3525000,
-            period: Duration::from_secs(60 * 60 * 24 * 30 * 6),
+            period: 60 * 60 * 24 * 30 * 6,
             limit: 50
         };
 
         let hamster_haven_hoard = Package {
-            name: "Hamster Haven Hoard",
+            name: String::from("Hamster Haven Hoard"),
             deposit_amount: 4000000,
             reward_amount: 4750000,
-            period: Duration::from_secs(60 * 60 * 24 * 30 * 9),
+            period: 60 * 60 * 24 * 30 * 9,
             limit: 40
         };
 
         let oxonis_wizard = Package {
-            name: "Oxonis Wizard",
+            name: String::from("Oxonis Wizard"),
             deposit_amount: 5000000,
             reward_amount: 6000000,
-            period: Duration::from_secs(60 * 60 * 24 * 30 * 12),
+            period: 60 * 60 * 24 * 30 * 12,
             limit: 30
         };
-
-        packages.push(petes_pebble_pounch);
+        
+        let staking_storage = &mut ctx.accounts.staking_storage;
+        staking_storage.packages.push(petes_pebble_pounch);
+        staking_storage.packages.push(golden_wheel_guild);
+        staking_storage.packages.push(burrowers_bounty);
+        staking_storage.packages.push(cheek_pounch_chest);
+        staking_storage.packages.push(hamster_haven_hoard);
+        staking_storage.packages.push(oxonis_wizard);
 
         Ok(())
     }
@@ -86,10 +97,29 @@ pub mod pete_staking {
         token::transfer(cpi_ctx, deposit_amount)?;
         Ok(())
     }
+
+    // pub fn set(ctx: Context<Set>, new_x: u64) -> Result<()> {
+    //     let my_storage = &mut ctx.accounts.my_storage;
+	//     my_storage.x = new_x;
+
+    //     Ok(())
+    // }
 }
 
 #[derive(Accounts)]
-pub struct Initialize {}
+pub struct Initialize<'info> {
+    #[account(init,
+        payer = signer,
+        space=size_of::<StakingStorage>() + 8,
+        seeds = [],
+        bump)]
+    pub staking_storage: Account<'info, StakingStorage>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
@@ -106,10 +136,22 @@ pub struct Deposit<'info> {
     pub autority: Signer<'info>,
 }
 
-pub struct Package<'a> {
-    pub name: &'a str,
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct Package {
+    pub name: String,
     pub deposit_amount: u64,
-    pub period: Duration,
+    pub period: u64,
     pub reward_amount: u64,
     pub limit: u64
+}
+
+#[account]
+pub struct StakingStorage{
+    packages: Vec<Package>
+}
+
+#[derive(Accounts)]
+pub struct Set<'info> {
+    #[account(mut, seeds = [], bump)]
+    pub my_storage: Account<'info, StakingStorage>,
 }

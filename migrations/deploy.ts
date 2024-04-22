@@ -3,6 +3,7 @@
 // configured from the workspace's Anchor.toml.
 
 const anchor = require("@coral-xyz/anchor");
+// const anchor = require("@project-serum/anchor")
 
 module.exports = async function (provider) {
   // Configure client to use the provider.
