@@ -167,6 +167,24 @@ describe("pete-token", () => {
             authority: key
         }).rpc()
 
+        // await staking_program.methods.stakeUltimate(new anchor.BN(1000)).accounts({
+        //     from: fromTokenAccount.address,
+        //     authority: key,
+        //     tokenProgram: TOKEN_PROGRAM_ID,
+        //     stakingStorage,
+        //     escrowVault,
+        //     mint: mintKey.publicKey
+        // }).rpc()
+
+        // await staking_program.methods.withdrawUltimate(escroVaultBump).accounts({
+        //     to: fromTokenAccount.address,
+        //     tokenProgram: TOKEN_PROGRAM_ID,
+        //     stakingStorage,
+        //     escrowVault,
+        //     mint: mintKey.publicKey,
+        //     authority: key
+        // }).rpc()
+
         const owner_balance_after_withdraw = await getBalance(key, mintKey.publicKey)
         console.log("owner balance after withdraw:", owner_balance_after_withdraw)
 

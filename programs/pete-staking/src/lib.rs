@@ -6,7 +6,7 @@ use anchor_lang::prelude::*;
 use std::mem::size_of;
 use anchor_spl::token::{self, Mint, TokenAccount};
 use anchor_spl::{
-    token::{ MintTo, Token, Transfer }
+    token::{ Token, Transfer }
 };
 declare_id!("FnGJWC16sMUACBekWbyGBaq3H9jc46oDMQ221AvXy1ew");
 
@@ -78,6 +78,14 @@ pub mod pete_staking {
         staking_storage.packages.push(cheek_pounch_chest);
         staking_storage.packages.push(hamster_haven_hoard);
         staking_storage.packages.push(oxonis_wizard);
+
+        let the_verdant_veil = UltimatePackage {
+            name: String::from("The Verdant Veil"),
+            apy: 10,
+            period: 60 * 60 * 24 * 30 * 12
+        };
+
+        staking_storage.ultimate_package = the_verdant_veil;
 
         Ok(())
     }
@@ -173,9 +181,9 @@ pub mod pete_staking {
                 let timestamp = clock.unwrap().unix_timestamp;
                 let expected_timestamp = active_stake_log.stake_timestamp + packages[package_index as usize].period;
             
-                // if expected_timestamp > timestamp {
-                //     return Err(ErrorCode::InvalidLockTime.into());
-                // }
+                if expected_timestamp > timestamp {
+                    return Err(ErrorCode::InvalidLockTime.into());
+                }
             }
             else {
                 continue;
@@ -204,6 +212,7 @@ pub mod pete_staking {
 
         token::transfer(cpi_ctx, withdraw_amount)?;
 
+        // update stake log
         let staking_storage = &mut ctx.accounts.staking_storage;
         staking_storage.stake_logs[log_index].terminated = true;
 
@@ -222,6 +231,114 @@ pub mod pete_staking {
         let cpi_ctx = CpiContext::new(cpi_program, transfer_instruction);
 
         token::transfer(cpi_ctx, deposit_amount)?;
+        Ok(())
+    }
+
+    pub fn stake_ultimate(ctx: Context<Deposit>, deposit_amount: u64) -> Result<()> {
+        let staking_storage = &mut ctx.accounts.staking_storage;
+
+        // check if ultimate staking is started
+        for package in staking_storage.packages.iter() {
+            if package.slot_count < package.slot_limit {
+                return Err(ErrorCode::UltimateStakingNotAvailable.into());
+            }
+        }
+
+        // check if account already staked
+        for stake_log in staking_storage.ultimate_stake_logs.iter() {
+            if stake_log.staker == ctx.accounts.from.to_account_info().key() {
+                return Err(ErrorCode::AccountAlreadyStaked.into());
+            }
+        }
+
+        let transfer_instruction = Transfer{
+            from: ctx.accounts.from.to_account_info(),
+            to: ctx.accounts.escrow_vault.to_account_info(),
+            authority: ctx.accounts.authority.to_account_info(),
+        };
+
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+
+        let cpi_ctx = CpiContext::new(cpi_program, transfer_instruction);
+
+        token::transfer(cpi_ctx, deposit_amount)?;
+
+        let clock = Clock::get();
+        let timestamp = clock.unwrap().unix_timestamp;
+        
+        let stake_log = UltimateStakeLog {
+            deposite_amount: deposit_amount,
+            stake_timestamp: timestamp,
+            staker: ctx.accounts.from.to_account_info().key(),
+            terminated: false
+        };
+
+        staking_storage.ultimate_stake_logs.push(stake_log);
+
+        Ok(())
+    }
+
+    pub fn withdraw_ultimate(ctx: Context<Withdraw>, escrow_bump: u8) -> Result<()> {
+        // check if user is valid staker and time lock
+        let stake_logs = & ctx.accounts.staking_storage.ultimate_stake_logs;
+        let mut is_valid_staker = false;
+        let mut active_stake_log: &UltimateStakeLog;
+        let mut log_index: usize = 0;
+        let mut deposited_amount: u64 = 0;
+        for stake_log in  stake_logs.iter() {
+            if stake_log.staker == ctx.accounts.to.to_account_info().key() {
+                is_valid_staker = true;
+                active_stake_log = stake_log;
+
+                log_index = stake_logs.iter().position(|x| x.staker == stake_log.staker).unwrap_or(0) as usize;
+
+                deposited_amount = stake_log.deposite_amount;
+
+                // check if active stake
+                if stake_log.terminated == true {
+                    return Err(ErrorCode::StakeAlreadyTerminated.into());
+                }
+
+                // check time lock
+                let clock = Clock::get();
+                let timestamp = clock.unwrap().unix_timestamp;
+                let expected_timestamp = active_stake_log.stake_timestamp + ctx.accounts.staking_storage.ultimate_package.period;
+            
+                if expected_timestamp > timestamp {
+                    return Err(ErrorCode::InvalidLockTime.into());
+                }
+            }
+            else {
+                continue;
+            }
+        }
+        if is_valid_staker == false {
+            return Err(ErrorCode::AccountNeverStaked.into());
+        }
+
+        let mint_key = &mut ctx.accounts.mint.key();
+        let seeds = &["escrow_vault".as_bytes(), mint_key.as_ref(), &[escrow_bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        let transfer_instruction = Transfer{
+            from: ctx.accounts.escrow_vault.to_account_info(),
+            to: ctx.accounts.to.to_account_info(),
+            authority: ctx.accounts.escrow_vault.to_account_info(),
+        };
+
+        // start main withdraw/reward process - deposit token
+        let withdraw_amount = deposited_amount + ( deposited_amount / 100 * ctx.accounts.staking_storage.ultimate_package.apy);
+
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, transfer_instruction, signer_seeds);
+
+        token::transfer(cpi_ctx, withdraw_amount)?;
+
+        // update stake log
+        let staking_storage = &mut ctx.accounts.staking_storage;
+        staking_storage.ultimate_stake_logs[log_index].terminated = true;
+        
         Ok(())
     }
 }
@@ -280,16 +397,6 @@ pub struct Deposit<'info> {
         seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
         bump)]
     pub escrow_vault: Account<'info, TokenAccount>,
-
-    // #[account(init,
-    //     payer = autority,
-    //     owner = token_program.key(),
-    //     seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
-    //     rent_exempt = enforce,
-    //     token::mint = mint,
-    //     token::authority = escrow_vault,
-    //     bump)]
-    // pub escrow_vault: Account<'info, TokenAccount>,
         
     /// Token mint.
     pub mint: Account<'info, Mint>,
@@ -360,6 +467,13 @@ pub struct Package {
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct UltimatePackage {
+    pub name: String,
+    pub apy: u64,
+    pub period: i64
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct StakeLog {
     pub staker: Pubkey,
     pub package_index: u8,
@@ -369,10 +483,20 @@ pub struct StakeLog {
     pub terminated: bool
 }
 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct UltimateStakeLog {
+    pub staker: Pubkey,
+    pub deposite_amount: u64,
+    pub stake_timestamp: i64,
+    pub terminated: bool
+}
+
 #[account]
 pub struct StakingStorage {
     packages: Vec<Package>,
-    stake_logs: Vec<StakeLog>
+    stake_logs: Vec<StakeLog>,
+    ultimate_package: UltimatePackage,
+    ultimate_stake_logs: Vec<UltimateStakeLog>
 }
 
 #[derive(Accounts)]
@@ -394,5 +518,7 @@ pub enum ErrorCode {
     #[msg("Lock time period is not satisfied")]
     InvalidLockTime,
     #[msg("Stake already terminated")]
-    StakeAlreadyTerminated
+    StakeAlreadyTerminated,
+    #[msg("Limited staking is still available")]
+    UltimateStakingNotAvailable
 }
