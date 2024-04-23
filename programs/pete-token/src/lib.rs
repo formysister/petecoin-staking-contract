@@ -4,7 +4,7 @@ use anchor_spl::{
     token::{ MintTo, Token, Transfer }
 };
 
-declare_id!("CmxrCG1EhjZcedGZxKcKQLamjTZprQvFbvugN9Si1yhn");
+declare_id!("FQ8uvnRBAMkbxHxZPboh2p5fgYnH4tBDFKSNbYjPY6ne");
 
 #[program]
 pub mod pete_token {
@@ -22,7 +22,7 @@ pub mod pete_token {
         
         let cpi_context = CpiContext::new(cpi_program, cpi_accounts);
 
-        token::mint_to(cpi_context, 100000000)?;
+        token::mint_to(cpi_context, 1000000000)?;
 
         Ok(())
     }

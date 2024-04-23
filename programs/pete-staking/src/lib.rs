@@ -2,20 +2,13 @@ use solana_program::pubkey::*;
 use solana_program::clock::{
     Clock, UnixTimestamp
 };
-use borsh:: {
-    BorshDeserialize,
-    BorshSerialize
-};
-use std::time:: {
-    Duration
-};
 use anchor_lang::prelude::*;
 use std::mem::size_of;
 use anchor_spl::token::{self, Mint, TokenAccount};
 use anchor_spl::{
     token::{ MintTo, Token, Transfer }
 };
-declare_id!("CTg35G6Cin3iQZHe8i5pN9rJ5ajSyCN2sjvDmVfCyVpi");
+declare_id!("FnGJWC16sMUACBekWbyGBaq3H9jc46oDMQ221AvXy1ew");
 
 #[program]
 pub mod pete_staking {
@@ -93,21 +86,20 @@ pub mod pete_staking {
         let transfer_instruction = Transfer{
             from: ctx.accounts.from.to_account_info(),
             to: ctx.accounts.escrow_vault.to_account_info(),
-            authority: ctx.accounts.autority.to_account_info(),
+            authority: ctx.accounts.authority.to_account_info(),
         };
-
         
-        // validate package index
-        let packages = & ctx.accounts.staking_storage.packages;
+        let staking_storage = &mut ctx.accounts.staking_storage;
+        let packages = & staking_storage.packages;
+        let package = & packages[package_index as usize];
 
+        // validate package index
         if package_index >= packages.len() as u8{
             return Err(ErrorCode::InvalidPackageIndex.into());
         }
 
         // check if user already have stake on same package
-        let stake_logs = & ctx.accounts.staking_storage.stake_logs;
-        
-        for stake_log in  stake_logs.iter() {
+        for stake_log in  staking_storage.stake_logs.iter() {
             if stake_log.staker == ctx.accounts.from.to_account_info().key() && package_index == stake_log.package_index && stake_log.terminated == false {
                 return Err(ErrorCode::AccountAlreadyStaked.into());
             }
@@ -117,14 +109,13 @@ pub mod pete_staking {
         }
 
         // check if package slot fulfilled
-        let package = & packages[package_index as usize];
 
         if package.slot_count == package.slot_limit {
             return Err(ErrorCode::PackageSlotFulFilled.into());
         }
 
-        // start main staking process - deposit token
-        let deposit_amount = ctx.accounts.staking_storage.packages[package_index as usize].deposit_amount;
+        //start main staking process - deposit token
+        let deposit_amount = package.deposit_amount;
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
 
@@ -136,7 +127,6 @@ pub mod pete_staking {
         let clock = Clock::get();
         let timestamp = clock.unwrap().unix_timestamp;
 
-        let staking_storage = &mut ctx.accounts.staking_storage;
         let stake_log = StakeLog {
             staker: ctx.accounts.from.to_account_info().key(),
             package_index: package_index,
@@ -165,10 +155,18 @@ pub mod pete_staking {
         let stake_logs = & ctx.accounts.staking_storage.stake_logs;
         let mut is_valid_staker = false;
         let mut active_stake_log: &StakeLog;
+        let mut log_index: usize = 0;
         for stake_log in  stake_logs.iter() {
-            if stake_log.staker == ctx.accounts.to.to_account_info().key() && package_index == stake_log.package_index && stake_log.terminated == false {
+            if stake_log.staker == ctx.accounts.to.to_account_info().key() && package_index == stake_log.package_index {
                 is_valid_staker = true;
                 active_stake_log = stake_log;
+
+                log_index = stake_logs.iter().position(|x| x.package_index == stake_log.package_index && x.staker == stake_log.staker).unwrap_or(0) as usize;
+
+                // check if active stake
+                if stake_log.terminated == true {
+                    return Err(ErrorCode::StakeAlreadyTerminated.into());
+                }
 
                 // check time lock
                 let clock = Clock::get();
@@ -198,7 +196,7 @@ pub mod pete_staking {
         };
 
         // start main withdraw/reward process - deposit token
-        let withdraw_amount = ctx.accounts.staking_storage.packages[package_index as usize].deposit_amount;
+        let withdraw_amount = ctx.accounts.staking_storage.packages[package_index as usize].reward_amount;
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
 
@@ -206,6 +204,24 @@ pub mod pete_staking {
 
         token::transfer(cpi_ctx, withdraw_amount)?;
 
+        let staking_storage = &mut ctx.accounts.staking_storage;
+        staking_storage.stake_logs[log_index].terminated = true;
+
+        Ok(())
+    }
+
+    pub fn charge_escrow(ctx: Context<EscrowCharge>, deposit_amount: u64) -> Result<()> {
+        let transfer_instruction = Transfer{
+            from: ctx.accounts.from.to_account_info(),
+            to: ctx.accounts.escrow_vault.to_account_info(),
+            authority: ctx.accounts.authority.to_account_info(),
+        };
+
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+
+        let cpi_ctx = CpiContext::new(cpi_program, transfer_instruction);
+
+        token::transfer(cpi_ctx, deposit_amount)?;
         Ok(())
     }
 }
@@ -214,7 +230,7 @@ pub mod pete_staking {
 pub struct Initialize<'info> {
     #[account(init,
         payer = signer,
-        space=size_of::<StakingStorage>() + 800,
+        space=size_of::<StakingStorage>() + 8000,
         seeds = [],
         bump)]
     pub staking_storage: Account<'info, StakingStorage>,
@@ -224,20 +240,20 @@ pub struct Initialize<'info> {
 
     pub system_program: Program<'info, System>,
 
-    // #[account(address = token::ID)]
-    // pub token_program: Program<'info, Token>,
+    #[account(address = token::ID)]
+    pub token_program: Program<'info, Token>,
 
-    // #[account(init,
-    //     payer = signer,
-    //     owner = token_program.key(),
-    //     seeds = [b"escrow_vault".as_ref()],
-    //     rent_exempt = enforce,
-    //     token::mint = mint,
-    //     token::authority = escrow_vault,
-    //     bump)]
-    // pub escrow_vault: Account<'info, TokenAccount>,
+    #[account(init,
+        payer = signer,
+        owner = token_program.key(),
+        seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
+        rent_exempt = enforce,
+        token::mint = mint,
+        token::authority = escrow_vault,
+        bump)]
+    pub escrow_vault: Account<'info, TokenAccount>,
 
-    // pub mint: Account<'info, Mint>
+    pub mint: Account<'info, Mint>,
 }
 
 #[derive(Accounts)]
@@ -253,20 +269,51 @@ pub struct Deposit<'info> {
     // pub to: AccountInfo<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
-    pub autority: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(mut, seeds = [], bump)]
     pub staking_storage: Account<'info, StakingStorage>,
 
     pub system_program: Program<'info, System>,
 
-    #[account(init,
-        payer = autority,
-        owner = token_program.key(),
+    #[account(mut,
         seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
-        rent_exempt = enforce,
-        token::mint = mint,
-        token::authority = escrow_vault,
+        bump)]
+    pub escrow_vault: Account<'info, TokenAccount>,
+
+    // #[account(init,
+    //     payer = autority,
+    //     owner = token_program.key(),
+    //     seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
+    //     rent_exempt = enforce,
+    //     token::mint = mint,
+    //     token::authority = escrow_vault,
+    //     bump)]
+    // pub escrow_vault: Account<'info, TokenAccount>,
+        
+    /// Token mint.
+    pub mint: Account<'info, Mint>,
+}
+
+#[derive(Accounts)]
+pub struct EscrowCharge<'info> {
+    #[account(address = token::ID)]
+    pub token_program: Program<'info, Token>,
+
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut)]
+    pub from: UncheckedAccount<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    // #[account(mut)]
+    // pub to: AccountInfo<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+
+    #[account(mut,
+        seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
         bump)]
     pub escrow_vault: Account<'info, TokenAccount>,
         
@@ -283,7 +330,7 @@ pub struct Withdraw<'info> {
     pub to: UncheckedAccount<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
-    pub autority: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(mut, seeds = [], bump)]
     pub staking_storage: Account<'info, StakingStorage>,
@@ -345,5 +392,7 @@ pub enum ErrorCode {
     #[msg("Account never staked")]
     AccountNeverStaked,
     #[msg("Lock time period is not satisfied")]
-    InvalidLockTime
+    InvalidLockTime,
+    #[msg("Stake already terminated")]
+    StakeAlreadyTerminated
 }
