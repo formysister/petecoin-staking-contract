@@ -11,7 +11,7 @@ use std::time:: {
 };
 use anchor_lang::prelude::*;
 use std::mem::size_of;
-use anchor_spl::token;
+use anchor_spl::token::{self, Mint, TokenAccount};
 use anchor_spl::{
     token::{ MintTo, Token, Transfer }
 };
@@ -19,10 +19,6 @@ declare_id!("CTg35G6Cin3iQZHe8i5pN9rJ5ajSyCN2sjvDmVfCyVpi");
 
 #[program]
 pub mod pete_staking {
-    use std::time;
-
-    use solana_program::clock;
-
     use super::*;
 
     // pub static mut packages: Vec<Package> = Vec::new();
@@ -96,7 +92,7 @@ pub mod pete_staking {
     pub fn stake(ctx: Context<Deposit>, package_index: u8) -> Result<()> {
         let transfer_instruction = Transfer{
             from: ctx.accounts.from.to_account_info(),
-            to: ctx.accounts.to.to_account_info(),
+            to: ctx.accounts.escrow_vault.to_account_info(),
             authority: ctx.accounts.autority.to_account_info(),
         };
 
@@ -110,16 +106,24 @@ pub mod pete_staking {
 
         // check if user already have stake on same package
         let stake_logs = & ctx.accounts.staking_storage.stake_logs;
+        
         for stake_log in  stake_logs.iter() {
             if stake_log.staker == ctx.accounts.from.to_account_info().key() && package_index == stake_log.package_index && stake_log.terminated == false {
-                return Err(ErrorCode::AccountAlreadyStaked.into())
+                return Err(ErrorCode::AccountAlreadyStaked.into());
             }
             else {
                 continue;
             }
         }
 
+        // check if package slot fulfilled
+        let package = & packages[package_index as usize];
 
+        if package.slot_count == package.slot_limit {
+            return Err(ErrorCode::PackageSlotFulFilled.into());
+        }
+
+        // start main staking process - deposit token
         let deposit_amount = ctx.accounts.staking_storage.packages[package_index as usize].deposit_amount;
 
         let cpi_program = ctx.accounts.token_program.to_account_info();
@@ -128,6 +132,7 @@ pub mod pete_staking {
 
         token::transfer(cpi_ctx, deposit_amount)?;
 
+        // update stake log
         let clock = Clock::get();
         let timestamp = clock.unwrap().unix_timestamp;
 
@@ -140,6 +145,66 @@ pub mod pete_staking {
         };
 
         staking_storage.stake_logs.push(stake_log);
+
+        // update package state
+        let slot_count = staking_storage.packages[package_index as usize].slot_count;
+        staking_storage.packages[package_index as usize].slot_count = slot_count + 1;
+
+        Ok(())
+    }
+
+    pub fn withdraw(ctx: Context<Withdraw>, escrow_bump: u8, package_index: u8) -> Result<()> {
+        // validate package index
+        let packages = & ctx.accounts.staking_storage.packages;
+
+        if package_index >= packages.len() as u8{
+            return Err(ErrorCode::InvalidPackageIndex.into());
+        }
+
+        // check if user is valid staker and time lock
+        let stake_logs = & ctx.accounts.staking_storage.stake_logs;
+        let mut is_valid_staker = false;
+        let mut active_stake_log: &StakeLog;
+        for stake_log in  stake_logs.iter() {
+            if stake_log.staker == ctx.accounts.to.to_account_info().key() && package_index == stake_log.package_index && stake_log.terminated == false {
+                is_valid_staker = true;
+                active_stake_log = stake_log;
+
+                // check time lock
+                let clock = Clock::get();
+                let timestamp = clock.unwrap().unix_timestamp;
+                let expected_timestamp = active_stake_log.stake_timestamp + packages[package_index as usize].period;
+            
+                // if expected_timestamp > timestamp {
+                //     return Err(ErrorCode::InvalidLockTime.into());
+                // }
+            }
+            else {
+                continue;
+            }
+        }
+        if is_valid_staker == false {
+            return Err(ErrorCode::AccountNeverStaked.into());
+        }
+
+        let mint_key = &mut ctx.accounts.mint.key();
+        let seeds = &["escrow_vault".as_bytes(), mint_key.as_ref(), &[escrow_bump]];
+        let signer_seeds = &[&seeds[..]];
+
+        let transfer_instruction = Transfer{
+            from: ctx.accounts.escrow_vault.to_account_info(),
+            to: ctx.accounts.to.to_account_info(),
+            authority: ctx.accounts.escrow_vault.to_account_info(),
+        };
+
+        // start main withdraw/reward process - deposit token
+        let withdraw_amount = ctx.accounts.staking_storage.packages[package_index as usize].deposit_amount;
+
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, transfer_instruction, signer_seeds);
+
+        token::transfer(cpi_ctx, withdraw_amount)?;
 
         Ok(())
     }
@@ -158,33 +223,90 @@ pub struct Initialize<'info> {
     pub signer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
+
+    // #[account(address = token::ID)]
+    // pub token_program: Program<'info, Token>,
+
+    // #[account(init,
+    //     payer = signer,
+    //     owner = token_program.key(),
+    //     seeds = [b"escrow_vault".as_ref()],
+    //     rent_exempt = enforce,
+    //     token::mint = mint,
+    //     token::authority = escrow_vault,
+    //     bump)]
+    // pub escrow_vault: Account<'info, TokenAccount>,
+
+    // pub mint: Account<'info, Mint>
 }
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
+    #[account(address = token::ID)]
     pub token_program: Program<'info, Token>,
 
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub from: UncheckedAccount<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
-    #[account(mut)]
-    pub to: AccountInfo<'info>,
+    // #[account(mut)]
+    // pub to: AccountInfo<'info>,
     /// CHECK: This is not dangerous because we don't read or write from this account
     #[account(mut)]
     pub autority: Signer<'info>,
 
-    pub clock: Sysvar<'info, Clock>,
+    #[account(mut, seeds = [], bump)]
+    pub staking_storage: Account<'info, StakingStorage>,
+
+    pub system_program: Program<'info, System>,
+
+    #[account(init,
+        payer = autority,
+        owner = token_program.key(),
+        seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
+        rent_exempt = enforce,
+        token::mint = mint,
+        token::authority = escrow_vault,
+        bump)]
+    pub escrow_vault: Account<'info, TokenAccount>,
+        
+    /// Token mint.
+    pub mint: Account<'info, Mint>,
+}
+
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    pub token_program: Program<'info, Token>,
+
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut)]
+    pub to: UncheckedAccount<'info>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    #[account(mut)]
+    pub autority: Signer<'info>,
 
     #[account(mut, seeds = [], bump)]
-    pub staking_storage: Account<'info, StakingStorage>
+    pub staking_storage: Account<'info, StakingStorage>,
+
+    #[account(mut,
+        seeds = [b"escrow_vault".as_ref(), mint.key().as_ref()],
+        bump)]
+    pub escrow_vault: Account<'info, TokenAccount>,
+
+    /// Token mint.
+    pub mint: Account<'info, Mint>,
+
+    pub system_program: Program<'info, System>,
+
+    // #[account(mut)]
+    // pub signer: Signer<'info>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct Package {
     pub name: String,
     pub deposit_amount: u64,
-    pub period: u64,
+    pub period: i64,
     pub reward_amount: u64,
     pub slot_limit: u8,
     pub slot_count: u8
@@ -217,5 +339,11 @@ pub enum ErrorCode {
     #[msg("Invalid package index. It must be 0 ~ 5")]
     InvalidPackageIndex,
     #[msg("Account already staked on same package")]
-    AccountAlreadyStaked
+    AccountAlreadyStaked,
+    #[msg("Package slot fulfilled")]
+    PackageSlotFulFilled,
+    #[msg("Account never staked")]
+    AccountNeverStaked,
+    #[msg("Lock time period is not satisfied")]
+    InvalidLockTime
 }

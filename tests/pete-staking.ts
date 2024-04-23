@@ -80,7 +80,6 @@ describe("pete-token", () => {
         // Get minted token amount on the ATA for our anchor wallet
         const minted = (await token_program.provider.connection.getParsedAccountInfo(associated_token_account)).value.data
         
-        console.log("Minted:", minted)
 
         const owner_balance = await getBalance(key, mintKey.publicKey)
 
@@ -107,29 +106,53 @@ describe("pete-token", () => {
             staking_contract_address
         )
 
-        const [ stakingStorage, _bump ] = anchor.web3.PublicKey.findProgramAddressSync([], staking_program.programId)
+        const [ stakingStorage, stakingStorageBump ] = anchor.web3.PublicKey.findProgramAddressSync([], staking_contract_address)
+        const [ escrowVault, escroVaultBump ] = anchor.web3.PublicKey.findProgramAddressSync([
+            Buffer.from("escrow_vault"),
+            mintKey.publicKey.toBuffer()
+        ], staking_contract_address)
 
-        await staking_program.methods.initialize().accounts({ stakingStorage }).rpc()
-
-        await staking_program.methods.stake(0).accounts({
+        await token_program.methods.transfer(new anchor.BN(100000)).accounts({
             from: fromTokenAccount.address,
             to: stakingTokenAccount.address,
-            autority: key,
-            tokenProgram: TOKEN_PROGRAM_ID,
+            signer: key,
+            tokenProgram: TOKEN_PROGRAM_ID
+        }).rpc()
+
+        await staking_program.methods.initialize().accounts({ 
             stakingStorage
         }).rpc()
 
+        await staking_program.methods.stake(0).accounts({
+            from: fromTokenAccount.address,
+            autority: key,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            stakingStorage,
+            escrowVault,
+            mint: mintKey.publicKey
+        }).rpc()
+
         const owner_balance_after_transfer = await getBalance(key, mintKey.publicKey)
-        console.log("owner balance after transfer:", owner_balance_after_transfer)
+        console.log("owner balance after stake:", owner_balance_after_transfer)
 
         const staking_contract_balance = await getBalance(staking_contract_address, mintKey.publicKey)
-        console.log("guest balance after transfer:", staking_contract_balance)
+        console.log("contract balance after stakke:", staking_contract_balance)
 
-        // await staking_program.methods.set(new anchor.BN(1000)).accounts({ myStorage }).rpc()
+        await staking_program.methods.withdraw(escroVaultBump, 0).accounts({
+            to: fromTokenAccount.address,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            stakingStorage,
+            escrowVault,
+            mint: mintKey.publicKey,
+            autority: key
+        }).rpc()
+
+        const owner_balance_after_withdraw = await getBalance(key, mintKey.publicKey)
+        console.log("owner balance after transfer:", owner_balance_after_transfer)
+
+        console.log("owner balance after withdraw:", owner_balance_after_withdraw)
 
         const stored_data = await staking_program.account.stakingStorage.fetch(stakingStorage)
-
-        console.log("Stored data:", stored_data.packages)
     })
 })
 
